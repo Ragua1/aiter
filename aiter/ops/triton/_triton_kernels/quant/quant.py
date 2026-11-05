@@ -530,7 +530,80 @@ def _mxfp4_sr_random_words(
 
 
 @triton.jit
+def _mxfp4_sr_pack_emulated(
+    x,
+    scales,
+    random_words,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    MXFP4_QUANT_BLOCK_SIZE: tl.constexpr,
+):
+    """Stochastic E2M1 rounding without the gfx950 instruction.
+
+    Each value is divided by its block scale and rounded up to the next E2M1
+    grid point with probability equal to its distance from the lower one, using
+    16 random bits per value: the low half of the pair's word for the even
+    column, the high half for the odd one. Values from 6 up saturate to 6 and
+    the sign bit is kept, as in _mxfp4_pack_bits. The expected value is the
+    input to within 2^-17 of a grid step, but the bytes are not bit-identical
+    to gfx950 for the same Philox words."""
+    NUM_QUANT_BLOCKS: tl.constexpr = BLOCK_SIZE_N // MXFP4_QUANT_BLOCK_SIZE
+
+    # Divide by 2^(scale - 127) as two normal power-of-two factors, so the
+    # raw-zero and the largest scale need no subnormal constant.
+    exp = 127 - scales.to(tl.int32)
+    exp_lo = exp >> 1
+    inv_lo = ((exp_lo + 127) << 23).to(tl.float32, bitcast=True)
+    inv_hi = ((exp - exp_lo + 127) << 23).to(tl.float32, bitcast=True)
+    v = x.to(tl.float32).reshape(BLOCK_SIZE_M, NUM_QUANT_BLOCKS, MXFP4_QUANT_BLOCK_SIZE)
+    v = v * inv_lo.expand_dims(axis=2) * inv_hi.expand_dims(axis=2)
+    v = v.reshape(BLOCK_SIZE_M, BLOCK_SIZE_N)
+
+    words = random_words.to(tl.uint32)
+    bits = tl.join(words & 0xFFFF, words >> 16).reshape(BLOCK_SIZE_M, BLOCK_SIZE_N)
+    # Centred in its 2^-16 bin, so exact grid values never round up and the
+    # round-up probability is frac to within 2^-17.
+    u = (bits.to(tl.float32) + 0.5) * (1.0 / 65536.0)
+
+    # E2M1 spacing is 0.5 below 2, 1 below 4 and 2 up to 6; all steps are
+    # powers of two, so lo and frac are exact.
+    a = tl.minimum(tl.abs(v), 6.0)
+    step = tl.where(a < 2.0, 0.5, tl.where(a < 4.0, 1.0, 2.0))
+    inv_step = tl.where(a < 2.0, 2.0, tl.where(a < 4.0, 1.0, 0.5))
+    lo = tl.floor(a * inv_step) * step
+    frac = (a - lo) * inv_step
+    q = tl.where(u < frac, lo + step, lo)
+    sign = v.to(tl.uint32, bitcast=True) & 0x80000000
+    q = (q.to(tl.uint32, bitcast=True) | sign).to(tl.float32, bitcast=True)
+
+    # q is on the E2M1 grid, so round-to-nearest packing returns its code.
+    return _mxfp4_pack_bits(q, BLOCK_SIZE_N, BLOCK_SIZE_M, MXFP4_QUANT_BLOCK_SIZE)
+
+
+@triton.jit
 def _mxfp4_sr_pack(
+    x,
+    scales,
+    random_words,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    MXFP4_QUANT_BLOCK_SIZE: tl.constexpr,
+):
+    """Stochastic E2M1 packing: the gfx950 instruction where it exists, the
+    Triton emulation elsewhere."""
+    if is_hip_cdna4():
+        out = _mxfp4_sr_pack_cvt(
+            x, scales, random_words, BLOCK_SIZE_M, BLOCK_SIZE_N, MXFP4_QUANT_BLOCK_SIZE
+        )
+    else:
+        out = _mxfp4_sr_pack_emulated(
+            x, scales, random_words, BLOCK_SIZE_M, BLOCK_SIZE_N, MXFP4_QUANT_BLOCK_SIZE
+        )
+    return out
+
+
+@triton.jit
+def _mxfp4_sr_pack_cvt(
     x,
     scales,
     random_words,

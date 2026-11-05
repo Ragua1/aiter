@@ -20,9 +20,9 @@ from aiter.utility.fp4_utils import (
 )
 
 DEVICE_ARCH = arch_info.get_arch()
-_REQUIRES_GFX950 = pytest.mark.skipif(
-    DEVICE_ARCH != "gfx950",
-    reason="MXFP4 stochastic conversion requires gfx950",
+_REQUIRES_SR = pytest.mark.skipif(
+    not (DEVICE_ARCH == "gfx950" or arch_info.is_sw_emulated_fp4_avail()),
+    reason="MXFP4 stochastic conversion requires gfx950 or an emulated FP4 arch",
 )
 
 
@@ -349,7 +349,7 @@ def test_nvfp4_quant(
     torch.testing.assert_close(x_dq_triton, x_dq_torch, atol=atol, rtol=rtol)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 def test_dynamic_mxfp4_quant_sr_validates_contract():
     with pytest.raises(ValueError, match="2-D"):
         dynamic_mxfp4_quant(
@@ -394,7 +394,7 @@ def test_dynamic_mxfp4_quant_sr_validates_contract():
         dynamic_mxfp4_quant(x, philox_seed=1)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("shape", [(1, 32), (6, 96), (64, 256)])
 def test_dynamic_mxfp4_quant_sr_is_reproducible_and_reuses_rtn_scales(
@@ -426,7 +426,7 @@ def test_dynamic_mxfp4_quant_sr_is_reproducible_and_reuses_rtn_scales(
     assert not torch.equal(packed, packed_next)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 def test_dynamic_mxfp4_quant_sr_bf16_exact_values_match_known_encoding():
     values = torch.tensor(
         [
@@ -470,7 +470,7 @@ def test_dynamic_mxfp4_quant_sr_bf16_exact_values_match_known_encoding():
     )
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 def test_dynamic_mxfp4_quant_sr_accepts_noncontiguous_input():
     torch.manual_seed(19)
     x = torch.randn((96, 6), dtype=torch.float32, device="cuda").T
@@ -493,7 +493,7 @@ def test_dynamic_mxfp4_quant_sr_accepts_noncontiguous_input():
     torch.testing.assert_close(actual[1], expected[1], atol=0, rtol=0)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 def test_dynamic_mxfp4_quant_sr_preserves_raw_zero_scale_endpoint():
     # Raw E8M0 zero represents 2^-127, not the 2^-126 minimum normal value.
     x = torch.full((32, 32), 2.0**-125, dtype=torch.float32, device="cuda")
@@ -508,7 +508,7 @@ def test_dynamic_mxfp4_quant_sr_preserves_raw_zero_scale_endpoint():
     torch.testing.assert_close(_dequantize_mxfp4(packed, scales), x, atol=0, rtol=0)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 def test_dynamic_mxfp4_quant_sr_never_emits_e8m0_nan(dtype):
     x = torch.full(
@@ -522,7 +522,7 @@ def test_dynamic_mxfp4_quant_sr_never_emits_e8m0_nan(dtype):
     assert torch.all(scales == 254)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 def test_dynamic_mxfp4_quant_sr_uses_distinct_global_counters():
     torch.manual_seed(23)
     tile = torch.randn((32, 128), dtype=torch.bfloat16, device="cuda")
@@ -548,7 +548,7 @@ def test_dynamic_mxfp4_quant_sr_uses_distinct_global_counters():
     assert not torch.equal(packed, packed_high_offset)
 
 
-@_REQUIRES_GFX950
+@_REQUIRES_SR
 def test_dynamic_mxfp4_quant_sr_rounds_midpoints_without_bias():
     torch.manual_seed(29)
     x = torch.full((256, 256), 1.25, dtype=torch.float32, device="cuda")

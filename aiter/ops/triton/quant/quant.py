@@ -223,7 +223,9 @@ def dynamic_mxfp4_quant(
             (only (N // 2) % 2 == 0 is asserted); a trailing partial block still
             gets its own scale column, so the scale width is the ceiling, not
             N // 32. Allocated column-major when omitted.
-        use_sr: Use gfx950 native stochastic rounding for the E2M1 payload.
+        use_sr: Use stochastic rounding for the E2M1 payload: the gfx950
+            instruction there, and an unbiased Triton emulation on archs with
+            emulated FP4, which is not bit-identical to gfx950.
             The E8M0 scale remains deterministic round-to-nearest-even.
         philox_seed: Non-negative Philox seed. Required when ``use_sr=True``.
         philox_offset: Non-negative starting Philox counter. Callers must use
@@ -244,7 +246,8 @@ def dynamic_mxfp4_quant(
             non-integer Philox argument.
         ValueError: If stochastic-rounding arguments or shape are invalid, or
             ``backend`` is unknown.
-        RuntimeError: If stochastic rounding is requested outside gfx950, or
+        RuntimeError: If stochastic rounding is requested outside gfx950 and
+            the emulated FP4 archs, or
             ``backend="gluon"`` is not supported for this call.
 
     By default, gfx950 with bf16 input (and use_sr=False) uses a Gluon kernel
@@ -278,8 +281,12 @@ def dynamic_mxfp4_quant(
                 "use_sr=True requires x.shape[1] to be divisible by "
                 f"{MXFP4_QUANT_BLOCK_SIZE}, got {N}"
             )
-        if arch_info.get_arch() != "gfx950":
-            raise RuntimeError("MXFP4 stochastic rounding requires gfx950")
+        if not (
+            arch_info.get_arch() == "gfx950" or arch_info.is_sw_emulated_fp4_avail()
+        ):
+            raise RuntimeError(
+                "MXFP4 stochastic rounding requires gfx950 or an emulated FP4 arch"
+            )
         if philox_seed is None:
             raise ValueError("philox_seed is required when use_sr=True")
         if not isinstance(philox_seed, int) or not isinstance(philox_offset, int):
